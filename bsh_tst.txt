@@ -1,0 +1,157 @@
+directory_redmine="/var/lib/redmine"
+password="qw12qw"
+
+
+#Install development tools and header files necessary for building Ruby and Passenger
+sudo apt install -y build-essential zlib1g-dev libssl-dev libreadline-dev libyaml-dev libcurl4-openssl-dev libffi-dev
+
+#Install PostgreSQL and header files
+sudo apt install -y postgresql libpq-dev
+
+#Install Apache and header files
+sudo apt install -y apache2 apache2-dev
+
+#Install other tools
+sudo apt install -y subversion git
+
+#=============================================
+#=================Installation of Ruby
+#=============================================
+
+#Download Source Code
+curl -O https://cache.ruby-lang.org/pub/ruby/3.1/ruby-3.1.5.tar.gz
+
+#Build Ruby
+tar xvf ruby-3.1.5.tar.gz
+cd ruby-3.1.5
+./configure --disable-install-doc
+make
+sudo make install
+cd ..
+
+#=============================================
+#=================Installation of Ruby
+#=============================================
+
+#Creating a User for Redmine
+sudo -i -u postgres createuser -P redmine
+
+#--------------------------------------
+
+#Creating a Database for Redmine
+sudo -i -u postgres createdb -E UTF-8 -O redmine -T template0 redmine
+
+#=============================================
+#=================Redmine Installation
+#=============================================
+
+#Download Redmine
+sudo mkdir "$directory_redmine"
+sudo chown www-data "$directory_redmine"
+sudo -u www-data svn co https://svn.redmine.org/redmine/branches/5.1-stable /var/lib/redmine
+
+#Database Connection Settings
+
+#Create config/database.yml
+cat <<EOL > "$directory_redmine/config/database.yml"
+production:
+  adapter: postgresql
+  database: redmine
+  host: localhost
+  username: redmine
+  password: "$password"
+  encoding: utf8
+EOL
+
+#Create config/configuration.yml
+cat <<EOL > "$directory_redmine/config/configuration.yml"
+production:
+  email_delivery:
+    delivery_method: :smtp
+    smtp_settings:
+      address: "localhost"
+      port: 25
+      domain: "ubun.org"
+EOL
+
+#Move to Redmine Installation Directory
+cd "$directory_redmine"
+
+#Install gem Packages
+sudo bundle config set --local without 'development test'
+sudo bundle install
+
+#=============================================
+#=================Initial Setup for Redmine
+#=============================================
+
+#Create a Secret Token for Session Tampering Prevention
+sudo -u www-data bin/rake generate_secret_token
+
+#Create Database Tables
+sudo -u www-data RAILS_ENV=production bin/rake db:migrate
+
+#Install Passenger
+sudo gem install passenger -N
+
+#Install Passenger Module for Apache
+sudo passenger-install-apache2-module --auto --languages ruby
+
+#Confirming Configuration Details for Apache
+passenger-install-apache2-module --snippet
+
+#=============================================
+#=================Configuring Apache
+#=============================================
+
+
+cat <<EOL > "/etc/apache2/conf-available/redmine.conf"
+# Configuration to allow access to Redmine's image files, CSS files, etc.
+# By default in Apache 2.4, access to all files on the server is forbidden.
+
+<Directory "$directory_redmine/public">
+  Require all granted
+</Directory>
+
+
+# Basic configuration for Passenger.
+# Describe the configuration displayed by passenger-install-apache2-module --snippet.
+# The settings below will vary depending on the environment, so do not simply copy these lines as is, but always use the ones displayed by `passenger-install-apache2-module --snippet`.
+#
+
+LoadModule passenger_module /usr/local/lib/ruby/gems/3.1.15/gems/passenger-6.0.19/buildout/apache2/mod_passenger.so
+<IfModule mod_passenger.c>
+  PassengerRoot /usr/local/lib/ruby/gems/3.1.15/gems/passenger-6.0.19
+  PassengerDefaultRuby /usr/local/bin/ruby
+</IfModule>
+
+
+# Add settings for Passenger tuning as necessary (optional).
+# For more details, refer to Configuration reference - Passenger + Apache (https://www.phusionpassenger.com/docs/references/config_reference/apache/).
+PassengerMaxPoolSize 20
+PassengerMaxInstancesPerApp 4
+PassengerPoolIdleTime 864000
+PassengerStatThrottleRate 10
+
+# Allow access to Redmine's installation directory
+<Directory /var/lib/redmine/public>
+    Allow from all
+    Options -MultiViews
+    Require all granted
+</Directory>
+EOL
+
+#Applying Apache Configuration
+sudo a2enconf redmine
+apache2ctl configtest
+sudo systemctl reload apache2
+
+#=============================================
+#=================Configuring Apache
+#=============================================
+
+#Pattern 1: Using the web server exclusively for Redmine
+sudo sed -i "s|DocumentRoot /var/www/html|DocumentRoot $directory_redmine/public|" /etc/apache2/sites-enabled/000-default.conf
+
+apache2ctl configtest
+sudo systemctl reload apache2
